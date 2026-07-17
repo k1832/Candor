@@ -1,0 +1,89 @@
+// core layer (design 0008 §5): the always-available, never-allocating floor.
+// NO function in this module carries `alloc`; the checker's effect partition
+// (design 0001 §3.2) proves it, so every item here is callable from the
+// ground floor (interrupt / no_std) — the P9 subtractive base.
+//
+// `Opt[T]` is result-shaped: `Some` is the `ok`-marked variant (design 0006),
+// so `?` propagates `None` through an `Opt`-returning caller.
+//
+// FRICTION — no closures / no higher-order inference. A `map[T,U](Opt[T],
+// fn(T)->U) -> Opt[U]` is deliberately NOT offered. Two measured language bites:
+//   (1) the prototype cannot infer `U` from a fn-pointer argument's *return*
+//       type (E1002) and there is no call-site turbofish (design 0007 §6.2),
+//       so a generic `map` is uncallable — it has nowhere to write the args; and
+//   (2) consuming an opaque `Opt[T]` by value trips the §3.4 opaque-drop `alloc`
+//       tax (the `None` arm drops a possibly-`Box`-bearing `T`), pushing `map`
+//       off the core ground floor.
+// A capturing closure would let a fold/map thread a transform by value; its
+// absence is the corelib's headline friction, recorded for OBL-GENERICS-ITER.
+pub enum Opt[T] {
+    ok Some(T),
+    None,
+}
+
+pub fn is_some[T](o: read Opt[T]) -> bool {
+    match o {
+        Opt::Some(v) => {
+            return true;
+        },
+        Opt::None => {
+            return false;
+        },
+    }
+}
+
+pub fn is_none[T](o: read Opt[T]) -> bool {
+    match o {
+        Opt::Some(v) => {
+            return false;
+        },
+        Opt::None => {
+            return true;
+        },
+    }
+}
+
+// `T: copy` is load-bearing: the default `d` and the `Some` payload are returned
+// by value, and `copy` makes `Opt[T]` drop-inert so this stays non-`alloc`.
+pub fn unwrap_or[T: copy](o: Opt[T], d: T) -> T {
+    match o {
+        Opt::Some(v) => {
+            return v;
+        },
+        Opt::None => {
+            return d;
+        },
+    }
+}
+
+// core/iter §5.2: the corelib's headline higher-order op, made writable by the
+// E1002 completion (infer `U` from `f`'s return type; design 0009 §1.2/§5.3) —
+// NO new surface. `map` FORWARDS its `T` into `f(v)` (moves it out, never drops),
+// so 0007 §3.4 does not tax it; the `None` arm consumes the drop-inert shell.
+// A `[T: copy, U: copy]` caller is drop-inert regardless. Capture-free: state
+// travels as an explicit context value, not a hidden environment (§5.1/§5.2).
+pub fn map[T, U](o: Opt[T], f: fn(T) -> U) -> Opt[U] {
+    match o {
+        Opt::Some(v) => {
+            return Opt::Some(f(v));
+        },
+        Opt::None => {
+            return Opt::None;
+        },
+    }
+}
+
+// `and_then` chains a fallible step: forward `T` into `f` (which yields the next
+// `Opt`), short-circuiting on `None`. Capture-free (the transform is an explicit
+// fn pointer, not a hidden environment; §5.1/§5.2). Like `map` it FORWARDS its `T`
+// into `f(v)` and consumes the drop-inert `None` shell, so §3.4 does not tax it.
+pub fn and_then[T, U](o: Opt[T], f: fn(T) -> Opt[U]) -> Opt[U] {
+    match o {
+        Opt::Some(v) => {
+            return f(v);
+        },
+        Opt::None => {
+            return Opt::None;
+        },
+    }
+}

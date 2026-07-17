@@ -1,0 +1,374 @@
+//! Host-backed std I/O shims for the boundary registry (design 0013 std I/O over
+//! the 0011 foreign boundary). These are the Rust stand-ins the two engines call
+//! when a Candor program invokes the `sys_read`/`sys_write`/`sys_open`/`sys_close`
+//! externs of the std/io boundary module. They perform **real host I/O** —
+//! `std::fs` for files, a captured in-process buffer for stdout/stderr — so the
+//! tree-walker and MIR engines run genuine, deterministic I/O against a fixture
+//! file and an assertable output buffer, before the native backend (0010) can
+//! emit real libc calls.
+//!
+//! Harness scope only, exactly like the rest of the shim registry: this ships no
+//! C and is not compiled into any Candor binary. The AOT path resolves the same
+//! externs to real libc (a 0010 forward dependency; not yet wired).
+//!
+//! ## The fd model
+//! - `0`/`1`/`2` are stdin/stdout/stderr. stdout/stderr writes append to captured
+//!   buffers (`take_stdout`/`take_stderr`); stdin reads drain a settable buffer.
+//! - `open` returns an fd `>= 3` backed by a real `std::fs::File`, resolved
+//!   against a test-set root directory (`set_root`) so a Candor program can open a
+//!   fixed logical name (`"input.txt"`) deterministically.
+//! - Errors return `-1` (the POSIX convention), which the safe wrapper turns into
+//!   the `Err` arm of its result-shaped return.
+
+use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
+use std::net::TcpStream;
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+
+use crate::interp::mem::Mem;
+
+/// Linux `open(2)` flag bits the shim honors (design 0011 §1: `flags` is `i32`).
+const O_WRONLY: i128 = 0x1;
+const O_RDWR: i128 = 0x2;
+const O_CREAT: i128 = 0x40;
+const O_TRUNC: i128 = 0x200;
+const O_APPEND: i128 = 0x400;
+
+/// A backing handle for an open fd (>= 3): a real file or a connected TCP socket.
+/// Both `std::fs::File` and `std::net::TcpStream` implement `Read`/`Write`, so the
+/// shared `sys_read`/`sys_write`/`sys_close` shims dispatch through this enum
+/// uniformly — a socket fd lives in the same fd table as a file fd (design 0013
+/// std net over the 0011 boundary: sockets ARE file descriptors).
+enum Handle {
+    File(File),
+    Tcp(TcpStream),
+}
+
+impl Handle {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Handle::File(f) => f.read(buf),
+            Handle::Tcp(s) => s.read(buf),
+        }
+    }
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Handle::File(f) => f.write(data),
+            Handle::Tcp(s) => s.write(data),
+        }
+    }
+}
+
+struct IoState {
+    root: PathBuf,
+    files: HashMap<i32, Handle>,
+    next_fd: i32,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    stdin: Vec<u8>,
+    stdin_pos: usize,
+}
+
+impl IoState {
+    fn new() -> Self {
+        IoState {
+            root: PathBuf::from("."),
+            files: HashMap::new(),
+            next_fd: 3,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            stdin: Vec::new(),
+            stdin_pos: 0,
+        }
+    }
+}
+
+fn state() -> &'static Mutex<IoState> {
+    static S: OnceLock<Mutex<IoState>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(IoState::new()))
+}
+
+// ---- test/harness controls -------------------------------------------------
+
+/// Reset all captured I/O state (call at the start of a demonstrator run).
+pub fn reset() {
+    let mut s = state().lock().unwrap();
+    *s = IoState::new();
+}
+
+/// Point `open` at a directory: a relative Candor path resolves against `root`.
+pub fn set_root(root: impl Into<PathBuf>) {
+    state().lock().unwrap().root = root.into();
+}
+
+/// Preload the bytes a `sys_read` on fd 0 (stdin) will drain.
+pub fn set_stdin(bytes: &[u8]) {
+    let mut s = state().lock().unwrap();
+    s.stdin = bytes.to_vec();
+    s.stdin_pos = 0;
+}
+
+/// Take everything written to fd 1 (stdout) so far.
+pub fn take_stdout() -> Vec<u8> {
+    std::mem::take(&mut state().lock().unwrap().stdout)
+}
+
+/// Take everything written to fd 2 (stderr) so far.
+pub fn take_stderr() -> Vec<u8> {
+    std::mem::take(&mut state().lock().unwrap().stderr)
+}
+
+// ---- registration ----------------------------------------------------------
+
+/// Register the four std/io shims into the foreign registry. Idempotent.
+pub fn register_std_io() {
+    crate::foreign::register("sys_open", shim_open);
+    crate::foreign::register("sys_close", shim_close);
+    crate::foreign::register("sys_read", shim_read);
+    crate::foreign::register("sys_write", shim_write);
+    crate::foreign::register("sys_listdir", shim_listdir);
+}
+
+/// Remove the std/io shims, restoring `no_foreign_runtime` for their symbols.
+pub fn unregister_std_io() {
+    for sym in ["sys_open", "sys_close", "sys_read", "sys_write", "sys_listdir"] {
+        crate::foreign::unregister(sym);
+    }
+}
+
+/// Register the std/net shim (`sys_tcp_connect`) into the foreign registry. The
+/// socket fd it returns lives in the SAME fd table as file fds, so the std/io
+/// `sys_read`/`sys_write`/`sys_close` shims (registered by `register_std_io`)
+/// operate on the socket — register both for a network client. Idempotent.
+pub fn register_std_net() {
+    crate::foreign::register("sys_tcp_connect", shim_tcp_connect);
+}
+
+/// Remove the std/net shim, restoring `no_foreign_runtime` for its symbol.
+pub fn unregister_std_net() {
+    crate::foreign::unregister("sys_tcp_connect");
+}
+
+// ---- test-only shim overrides (fault-injection) ----------------------------
+
+/// Override `sys_write` with a shim that reports it wrote exactly `n` bytes
+/// (a short write when `0 <= n < count`, or an error when `n < 0`), so the
+/// wrapper's short-write / error handling can be exercised deterministically.
+pub fn register_shim_override_write_short(n: i128) {
+    crate::foreign::register("sys_write", move |_args, _mem| n);
+}
+
+/// Override `sys_read` with a shim that reports an error (-1).
+pub fn register_shim_override_read_error() {
+    crate::foreign::register("sys_read", |_args, _mem| -1);
+}
+
+// ---- the shims -------------------------------------------------------------
+
+/// Read a NUL-terminated byte string out of Candor flat memory at `addr`.
+fn read_cstr(mem: &mut Mem, addr: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut a = addr;
+    loop {
+        match mem.read(a, 1, false) {
+            Ok(b) if !b.is_empty() && b[0] != 0 => {
+                out.push(b[0]);
+                a += 1;
+            }
+            _ => break,
+        }
+    }
+    out
+}
+
+/// `sys_open(path: rawptr u8, flags: i32, mode: i32) -> i32` — real `std::fs`.
+fn shim_open(args: &[i128], mem: &mut Mem) -> i128 {
+    let path_addr = args[0] as u64;
+    let flags = args[1];
+    let name = read_cstr(mem, path_addr);
+    let rel = match String::from_utf8(name) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    let mut s = state().lock().unwrap();
+    let full = s.root.join(rel);
+    let mut oo = OpenOptions::new();
+    let writing = flags & O_WRONLY != 0 || flags & O_RDWR != 0;
+    if flags & O_RDWR != 0 {
+        oo.read(true).write(true);
+    } else if writing {
+        oo.write(true);
+    } else {
+        oo.read(true);
+    }
+    if flags & O_CREAT != 0 {
+        oo.create(true);
+    }
+    if flags & O_TRUNC != 0 {
+        oo.truncate(true);
+    }
+    if flags & O_APPEND != 0 {
+        oo.append(true);
+    }
+    match oo.open(&full) {
+        Ok(f) => {
+            let fd = s.next_fd;
+            s.next_fd += 1;
+            s.files.insert(fd, Handle::File(f));
+            fd as i128
+        }
+        Err(_) => -1,
+    }
+}
+
+/// `sys_close(fd: i32) -> i32` — drop the file (0 on success, -1 if unknown).
+fn shim_close(args: &[i128], _mem: &mut Mem) -> i128 {
+    let fd = args[0] as i32;
+    let mut s = state().lock().unwrap();
+    if fd <= 2 {
+        return 0; // std streams are not real files here
+    }
+    if s.files.remove(&fd).is_some() {
+        0
+    } else {
+        -1
+    }
+}
+
+/// `sys_read(fd: i32, buf: rawptr u8, count: usize) -> isize` — fill Candor memory
+/// at `buf` with up to `count` bytes read from the fd; return the count (or -1).
+fn shim_read(args: &[i128], mem: &mut Mem) -> i128 {
+    let fd = args[0] as i32;
+    let buf = args[1] as u64;
+    let count = args[2] as usize;
+    let mut tmp = vec![0u8; count];
+    let n = {
+        let mut s = state().lock().unwrap();
+        if fd == 0 {
+            let avail = s.stdin.len().saturating_sub(s.stdin_pos);
+            let take = avail.min(count);
+            let start = s.stdin_pos;
+            tmp[..take].copy_from_slice(&s.stdin[start..start + take]);
+            s.stdin_pos += take;
+            take
+        } else if let Some(f) = s.files.get_mut(&fd) {
+            match f.read(&mut tmp) {
+                Ok(n) => n,
+                Err(_) => return -1,
+            }
+        } else {
+            return -1;
+        }
+    };
+    if mem.write(buf, &tmp[..n]).is_err() {
+        return -1;
+    }
+    n as i128
+}
+
+/// `sys_write(fd: i32, buf: rawptr u8, count: usize) -> isize` — write `count`
+/// bytes read from Candor memory at `buf` to the fd; return the count (or -1).
+fn shim_write(args: &[i128], mem: &mut Mem) -> i128 {
+    let fd = args[0] as i32;
+    let buf = args[1] as u64;
+    let count = args[2] as usize;
+    let data = match mem.read(buf, count as u64, false) {
+        Ok(d) => d,
+        Err(_) => return -1,
+    };
+    let mut s = state().lock().unwrap();
+    match fd {
+        1 => {
+            s.stdout.extend_from_slice(&data);
+            data.len() as i128
+        }
+        2 => {
+            s.stderr.extend_from_slice(&data);
+            data.len() as i128
+        }
+        _ => {
+            if let Some(f) = s.files.get_mut(&fd) {
+                match f.write(&data) {
+                    Ok(n) => n as i128,
+                    Err(_) => -1,
+                }
+            } else {
+                -1
+            }
+        }
+    }
+}
+
+/// `sys_listdir(path: rawptr u8, dst: rawptr u8, dcap: usize) -> isize` — the
+/// opendir/readdir enumerator over `std::fs::read_dir` (which already excludes
+/// `.` and `..`, matching the native shim's explicit skip). Two-call sizing: it
+/// returns the total bytes the entry names need (each name + a NUL separator), and
+/// — only when `dcap` is large enough — writes them NUL-separated into `dst`. The
+/// entry SET matches the native shim; the raw order may differ (the test sorts).
+/// Returns `-1` on error (unreadable path), the POSIX convention the wrapper turns
+/// into its `Err` arm.
+fn shim_listdir(args: &[i128], mem: &mut Mem) -> i128 {
+    use std::os::unix::ffi::OsStrExt;
+    let path_addr = args[0] as u64;
+    let dst_addr = args[1] as u64;
+    let dcap = args[2] as u64;
+    let name = read_cstr(mem, path_addr);
+    let dir = {
+        let s = state().lock().unwrap();
+        s.root.join(std::ffi::OsStr::from_bytes(&name))
+    };
+    let rd = match std::fs::read_dir(&dir) {
+        Ok(r) => r,
+        Err(_) => return -1,
+    };
+    let mut entries: Vec<Vec<u8>> = Vec::new();
+    for ent in rd {
+        match ent {
+            Ok(e) => entries.push(e.file_name().as_bytes().to_vec()),
+            Err(_) => return -1,
+        }
+    }
+    let needed: u64 = entries.iter().map(|n| n.len() as u64 + 1).sum();
+    if dcap >= needed && needed > 0 {
+        let mut buf = Vec::with_capacity(needed as usize);
+        for n in &entries {
+            buf.extend_from_slice(n);
+            buf.push(0);
+        }
+        if mem.write(dst_addr, &buf).is_err() {
+            return -1;
+        }
+    }
+    needed as i128
+}
+
+/// `sys_tcp_connect(host: rawptr u8, host_len: usize, port: i32) -> i32` — resolve
+/// `host` (a `host_len`-byte view, e.g. `127.0.0.1`) + `port` via
+/// `std::net::TcpStream::connect`, insert the connected stream into the SHARED fd
+/// table, and return its fd (>= 3). The returned fd is an ordinary entry alongside
+/// file fds, so `sys_read`/`sys_write`/`sys_close` operate on the socket. Returns
+/// -1 on any failure (host parse or a refused/unreachable connection), the
+/// POSIX-shaped convention the safe wrapper turns into its `Err` arm.
+fn shim_tcp_connect(args: &[i128], mem: &mut Mem) -> i128 {
+    let host_addr = args[0] as u64;
+    let host_len = args[1] as u64;
+    let port = args[2] as u16;
+    let host = match mem.read(host_addr, host_len, false) {
+        Ok(b) => match String::from_utf8(b) {
+            Ok(s) => s,
+            Err(_) => return -1,
+        },
+        Err(_) => return -1,
+    };
+    let stream = match TcpStream::connect((host.as_str(), port)) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    let mut s = state().lock().unwrap();
+    let fd = s.next_fd;
+    s.next_fd += 1;
+    s.files.insert(fd, Handle::Tcp(stream));
+    fd as i128
+}

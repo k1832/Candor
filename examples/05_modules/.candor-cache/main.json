@@ -1,0 +1,33 @@
+{
+  "module_path": "main",
+  "boundary": false,
+  "schema_salt": "candor-mir-schema-c2|candor-proto 0.1.0 / cranelift 0.132.3",
+  "source_hash": "00f6cb9ab2c9d860d0521fc6f47d4506851663e533dbb3aca122d883520f0b2d",
+  "signatures": [],
+  "codegen_bodies": [],
+  "imports": {
+    "geom": "89cf51ad5f529b028891516047dacfe5d52cd3972e933b2fbdafa8bca4d9ca10",
+    "math": "354b28676de8b15e2b2df961cb110b099a57029894e8ae621f38592e5d81c412"
+  },
+  "signature_hash": "7314f89c05f027962d9bc085aca000fa49f0a6b7efe8260926b2c211462a3707",
+  "codegen_hash": "493217e9984099f889fc3d1e467c0682a81118d53ae2714265738de1eb0e1ba1",
+  "edges": [
+    "geom",
+    "math"
+  ],
+  "exports_types": [],
+  "exports_values": [
+    {
+      "local": "main",
+      "global": "main",
+      "is_pub": false,
+      "is_fn": true
+    }
+  ],
+  "stub_items": [],
+  "item_codegen_hashes": {},
+  "insts": [],
+  "provenance": {
+    "toolchain": "candor-proto 0.1.0 / cranelift 0.132.3"
+  }
+}

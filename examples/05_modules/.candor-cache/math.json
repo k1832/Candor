@@ -1,0 +1,160 @@
+{
+  "module_path": "math",
+  "boundary": false,
+  "schema_salt": "candor-mir-schema-c2|candor-proto 0.1.0 / cranelift 0.132.3",
+  "source_hash": "77f3bc9c41208019f778947dbdced4c94be0be9da3a9be4bf824b273bea55789",
+  "signatures": [
+    "fn math::cube(x:take I64,)->I64",
+    "fn math::square(x:take I64,)->I64"
+  ],
+  "codegen_bodies": [
+    "{return (xMulmath::square(x,));}",
+    "{return (xMulx);}"
+  ],
+  "imports": {},
+  "signature_hash": "354b28676de8b15e2b2df961cb110b099a57029894e8ae621f38592e5d81c412",
+  "codegen_hash": "7a9472275e47e01cb16b1a46a82bb14041650598231ff6ebaa9e120ded914cfe",
+  "edges": [],
+  "exports_types": [],
+  "exports_values": [
+    {
+      "local": "cube",
+      "global": "math::cube",
+      "is_pub": true,
+      "is_fn": true
+    },
+    {
+      "local": "square",
+      "global": "math::square",
+      "is_pub": true,
+      "is_fn": true
+    }
+  ],
+  "stub_items": [
+    {
+      "Fn": {
+        "name": "math::square",
+        "type_params": [],
+        "regions": [],
+        "params": [
+          {
+            "name": "x",
+            "mode": "Take",
+            "region": null,
+            "ty": {
+              "kind": {
+                "Scalar": "I64"
+              },
+              "span": {
+                "start": 95,
+                "end": 98
+              }
+            },
+            "span": {
+              "start": 92,
+              "end": 98
+            }
+          }
+        ],
+        "alloc": false,
+        "foreign": false,
+        "boundary": false,
+        "requires": [],
+        "ensures": [],
+        "ret": {
+          "borrow": null,
+          "region": null,
+          "ty": {
+            "kind": {
+              "Scalar": "I64"
+            },
+            "span": {
+              "start": 103,
+              "end": 106
+            }
+          },
+          "span": {
+            "start": 103,
+            "end": 106
+          }
+        },
+        "body": {
+          "stmts": [],
+          "span": {
+            "start": 107,
+            "end": 128
+          }
+        },
+        "span": {
+          "start": 82,
+          "end": 128
+        }
+      }
+    },
+    {
+      "Fn": {
+        "name": "math::cube",
+        "type_params": [],
+        "regions": [],
+        "params": [
+          {
+            "name": "x",
+            "mode": "Take",
+            "region": null,
+            "ty": {
+              "kind": {
+                "Scalar": "I64"
+              },
+              "span": {
+                "start": 145,
+                "end": 148
+              }
+            },
+            "span": {
+              "start": 142,
+              "end": 148
+            }
+          }
+        ],
+        "alloc": false,
+        "foreign": false,
+        "boundary": false,
+        "requires": [],
+        "ensures": [],
+        "ret": {
+          "borrow": null,
+          "region": null,
+          "ty": {
+            "kind": {
+              "Scalar": "I64"
+            },
+            "span": {
+              "start": 153,
+              "end": 156
+            }
+          },
+          "span": {
+            "start": 153,
+            "end": 156
+          }
+        },
+        "body": {
+          "stmts": [],
+          "span": {
+            "start": 157,
+            "end": 186
+          }
+        },
+        "span": {
+          "start": 134,
+          "end": 186
+        }
+      }
+    }
+  ],
+  "item_codegen_hashes": {},
+  "insts": [],
+  "provenance": {
+    "toolchain": "candor-proto 0.1.0 / cranelift 0.132.3"
+  }
+}

@@ -1,0 +1,301 @@
+// The corelib seed's integration exercise (design 0008 §2: program entry is
+// `fn main` in the root `main.cnr`). It drives every module's public surface
+// end-to-end and returns a sentinel. `main` is `alloc` because it uses the std
+// allocator layer; the core layer it also calls stays on the ground floor.
+use core::opt::{Opt, is_some, is_none, unwrap_or, map};
+use core::res::{Res, decode, is_ok};
+use core::arena::{Arena, new, push, get, reset, count};
+use core::iter::{IterStep};
+use std::alloc::{Alloc};
+use std::bump::{Bump, with_window, mk_alloc};
+use std::list::{List, Popped, Grow, Cell, CellRes, push_front, pop_front, length, cell, cell_get, collect};
+use core::cmp::{Ord, Ordering};
+use core::iter_terminals::{last};
+use core::iter_adapters::{TakeN, take_n, Enumerate, enumerate, Pair};
+use std::str::{starts_with, contains, split, join};
+
+// a named fn threaded to `map` capture-free (design 0009 §5.2): the call site
+// the seed could not previously write (E1002).
+fn inc(x: i64) -> i64 {
+    return x + 1;
+}
+
+fn main() alloc -> i64 {
+    // --- core/arena: fixed inline backing, T:copy, never allocates ----------
+    let mut ar: Arena[i64] = new(0);
+    let a0: bool = push(write ar, 10);
+    let a1: bool = push(write ar, 20);
+    let a2: bool = push(write ar, 30);
+    let asum: i64 = get(read ar, 0) + get(read ar, 1) + get(read ar, 2); // 60
+    let acount: u32 = count(read ar); // 3
+    reset(write ar);
+    let acount2: u32 = count(read ar); // 0
+
+    // --- core/opt ------------------------------------------------------------
+    let s1: Opt[i64] = Opt::Some(1);
+    let n1: Opt[i64] = Opt::None;
+    let mut ob: i64 = 0;
+    if is_some(read s1) {
+        ob = ob + 10; // +10
+    }
+    if is_none(read n1) {
+        ob = ob + 100; // +100
+    }
+    let ov: i64 = unwrap_or(s1, 0) + unwrap_or(n1, 5); // 1 + 5 = 6
+
+    // --- core/res: error widening `IoErr` -> `AppErr` (From impl in `res`) ---
+    let mut dok: i64 = 0;
+    match decode(true) {
+        Res::Ok(v) => {
+            dok = v; // 43
+        },
+        Res::Err(e) => {
+            dok = -1;
+        },
+    }
+    let okr: Res[i64, bool] = Res::Ok(9);
+    let mut ib: i64 = 0;
+    if is_ok(read okr) {
+        ib = 7; // 7
+    }
+
+    // --- std/bump: build an Alloc over a caller-provided window --------------
+    let mut bs: Bump = with_window(16777216, 1048576);
+    let al: Alloc = mk_alloc(write bs);
+
+    // --- std/list: Box-chain over the Alloc; alloc-on-drop by construction ---
+    let mut lst: List[i64] = List::Nil;
+    match push_front(read al, lst, 3) {
+        Grow::Grown(nl) => {
+            lst = nl;
+        },
+        Grow::GrowOom => {
+            return -2;
+        },
+    }
+    match push_front(read al, lst, 1) {
+        Grow::Grown(nl) => {
+            lst = nl;
+        },
+        Grow::GrowOom => {
+            return -2;
+        },
+    }
+    match push_front(read al, lst, 4) {
+        Grow::Grown(nl) => {
+            lst = nl;
+        },
+        Grow::GrowOom => {
+            return -2;
+        },
+    }
+    let ln: u32 = length(read lst); // 3
+
+    // pop the front (4), keep the rest ([1, 3])
+    let pop1: Popped[i64] = pop_front(lst);
+    let it: Opt[i64] = pop1.item;
+    let rst: List[i64] = pop1.rest;
+    let popped_val: i64 = unwrap_or(it, 0); // 4
+    let rest_len: u32 = length(read rst); // 2
+
+    // --- std/list/Cell: the generic user drop hook (alloc-on-drop) -----------
+    let mut cv: i64 = 0;
+    match cell(read al, 99) {
+        CellRes::Made(c) => {
+            cv = cell_get(read c); // 99; c drops -> hook + free
+        },
+        CellRes::CellOom => {
+            return -3;
+        },
+    }
+
+    // --- core/iter over Indexed: `for` replaces the index ladder (§8) --------
+    // Ground floor (non-`alloc`): a `read` loan on `ar3` copies each element out.
+    let mut ar3: Arena[i64] = new(0);
+    let f0: bool = push(write ar3, 5);
+    let f1: bool = push(write ar3, 7);
+    let mut arsum: i64 = 0;
+    for x in read ar3 {
+        arsum = arsum + x; // 12
+    }
+
+    // --- core/iter over Iter: consuming `for` replaces hand-recursion (§8.1) --
+    // `for v in l2` MOVES `l2`; each `next` unboxes a cell -> inherits `alloc`.
+    let mut l2: List[i64] = List::Nil;
+    match push_front(read al, l2, 2) {
+        Grow::Grown(nl) => {
+            l2 = nl;
+        },
+        Grow::GrowOom => {
+            return -4;
+        },
+    }
+    match push_front(read al, l2, 8) {
+        Grow::Grown(nl) => {
+            l2 = nl;
+        },
+        Grow::GrowOom => {
+            return -4;
+        },
+    }
+    let mut listsum: i64 = 0;
+    for v in l2 {
+        listsum = listsum + v; // 10
+    }
+
+    // --- core/opt::map: the higher-order op, capture-free + E1002-inferred ----
+    let mapped: Opt[i64] = map(Opt::Some(20), inc);
+    let mv: i64 = unwrap_or(mapped, 0); // 21
+
+    // --- promoted session utilities: exercised as guard checks so the sentinel
+    // --- stays STABLE (each fails to a distinct negative, else falls through) --
+    // core/cmp: `Ord` dispatch on a scalar (Ordering + the i64 impl).
+    let cmp_probe: i64 = 10;
+    match cmp_probe.cmp(20) {
+        Ordering::Less => {},
+        Ordering::Equal => {
+            return -20;
+        },
+        Ordering::Greater => {
+            return -20;
+        },
+    }
+
+    // core/iter_terminals: consume a `List` through the `last` terminal.
+    let mut lt: List[i64] = List::Nil;
+    match push_front(read al, lt, 5) {
+        Grow::Grown(nl) => {
+            lt = nl;
+        },
+        Grow::GrowOom => {
+            return -21;
+        },
+    }
+    match push_front(read al, lt, 6) {
+        Grow::Grown(nl) => {
+            lt = nl;
+        },
+        Grow::GrowOom => {
+            return -21;
+        },
+    }
+    match last(lt) {
+        Opt::Some(lv) => {
+            if lv != 5 {
+                return -22;
+            }
+        },
+        Opt::None => {
+            return -22;
+        },
+    }
+
+    // core/iter_adapters: a lazy adapter over a `List`, consumed by a terminal —
+    // `take_n` bounds the walk to the first item, `last` drives it to exhaustion.
+    // The adapter's `[I: Iter]` bound is qualified in the module tree now, so its
+    // `self.inner.next()` resolves (was E1002). The un-yielded tail is freed when
+    // the exhausted `TakeN` drops (alloc-on-drop), so `main` stays `alloc`.
+    let mut lad: List[i64] = List::Nil;
+    match push_front(read al, lad, 5) {
+        Grow::Grown(nl) => {
+            lad = nl;
+        },
+        Grow::GrowOom => {
+            return -28;
+        },
+    }
+    match push_front(read al, lad, 6) {
+        Grow::Grown(nl) => {
+            lad = nl;
+        },
+        Grow::GrowOom => {
+            return -28;
+        },
+    }
+    let capped: TakeN[List[i64]] = take_n(lad, 1usize);
+    match last(capped) {
+        Opt::Some(av) => {
+            if av != 6 {
+                return -29;
+            }
+        },
+        Opt::None => {
+            return -29;
+        },
+    }
+
+    // core/iter_adapters: `enumerate` yields a COMPOUND `Pair[usize, i64]` item —
+    // its `type Item` binds a NAMED generic (`Pair`), qualified in the module tree
+    // now (was E1004). `last` drives the adapter to its final pair; inspect both
+    // projections. A guard check, so the sentinel stays STABLE.
+    let mut len2: List[i64] = List::Nil;
+    match push_front(read al, len2, 5) {
+        Grow::Grown(nl) => {
+            len2 = nl;
+        },
+        Grow::GrowOom => {
+            return -30;
+        },
+    }
+    match push_front(read al, len2, 6) {
+        Grow::Grown(nl) => {
+            len2 = nl;
+        },
+        Grow::GrowOom => {
+            return -30;
+        },
+    }
+    let enumd: Enumerate[List[i64]] = enumerate(len2);
+    match last(enumd) {
+        Opt::Some(pv) => {
+            if pv.first != 1usize {
+                return -31;
+            }
+            if pv.second != 5 {
+                return -31;
+            }
+        },
+        Opt::None => {
+            return -31;
+        },
+    }
+
+    // std/list: materialize a `List` from the `Iter` protocol via `collect`.
+    let mut lc: List[i64] = List::Nil;
+    match push_front(read al, lc, 7) {
+        Grow::Grown(nl) => {
+            lc = nl;
+        },
+        Grow::GrowOom => {
+            return -23;
+        },
+    }
+    match push_front(read al, lc, 8) {
+        Grow::Grown(nl) => {
+            lc = nl;
+        },
+        Grow::GrowOom => {
+            return -23;
+        },
+    }
+    let collected: List[i64] = collect(lc, read al);
+    if length(read collected) != 2u32 {
+        return -24;
+    }
+
+    // std/str: byte-scan predicates + a split/join round-trip.
+    if !starts_with("hello", "he") {
+        return -25;
+    }
+    if !contains("hello", "ell") {
+        return -26;
+    }
+    let parts: Vec[String] = split(read al, "a,b,c", ",");
+    let joined: String = join(read al, read parts, ",");
+    if len(as_str(read joined)) != 5usize {
+        return -27;
+    }
+
+    // rst (a List) drops here -> structural Box free -> alloc (main is alloc).
+    return asum + conv i64 acount + conv i64 acount2 + ob + ov + dok + ib + conv i64 ln + popped_val + conv i64 rest_len + cv + arsum + listsum + mv;
+}
