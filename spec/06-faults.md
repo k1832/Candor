@@ -1,10 +1,12 @@
 # 06 — Faults
 
-**Status: NORMATIVE-DRAFT** (§§1–6, the prototype-validated fault model,
-transcribed from design `0001-memory-model` §7–§8 and design `0003` §2.6)
-**+ SKELETON** (§7, the imprecise fault **window** — P5's bound and the NN#20
-formalization obligation). Rationale is in design 0001; the soundness claim
-structure is in design 0003 §1.
+**Status: NORMATIVE-DRAFT** (§§1–8 — the prototype-validated fault model
+(§§1–6), the single-threaded fault **window** (§7, discharged per ruling J1),
+and observable effects (§8)) **+ SKELETON** (§7.5, the fault window's
+**concurrency composition** — the NN#20 named-novel obligation, deferred with
+atomics). Rationale is in design 0001; the soundness claim structure is in design
+0003 §1; the fault-window proof artifact is
+`docs/spec/drafts/fault-window-formalization.md`.
 
 ---
 
@@ -110,44 +112,141 @@ structure is in design 0003 §1.
 
 ---
 
-## 7. The imprecise fault window — SKELETON (P5, NN#20)
+## 7. The imprecise fault window (P5, NN#20)
 
-**Status: SKELETON.** This section records P5's invariant and the mandatory
-pre-stability formalization obligation NN#20. The prototype does not exercise the
-window (§3; no optimizer), so it is the cheapest point to fix the position.
+**Status: NORMATIVE-DRAFT (single-threaded window) + SKELETON (concurrency
+composition).** The single-threaded fault-window core is formalized and
+adversarially reviewed in `docs/spec/drafts/fault-window-formalization.md` — the
+**proof artifact** this section cites. Its discharged results (Containment,
+Prefix-determinism, NN#1/NN#5 preservation, collapse-to-precise) are stated
+normatively in §7.4 and discharge OBL-WINDOW for the concurrency-free edition
+(ruling J1, `docs/1.0-GATE-TRIAGE.md`; chapter 99). The **concurrency
+composition** — the synchronization half of the §7.2 bound — is vacuous this
+edition (no atomics ship, chapter 09) and remains SKELETON, deferred with the
+atomics surface (§7.5). The prototype does not exercise the window (§3; no
+optimizer).
 
-7.1 **The invariant (P5, normative position).** For a given compilation target:
-    fault-free executions are **deterministic across build modes** (same source +
-    target + inputs ⇒ identical observable behavior). A faulting execution is a
-    **truncated** execution: the fault is **imprecise but inescapable** — no value
-    derived from it becomes observable, delivery is guaranteed, and observable
-    behavior is identical across build modes **up to a fault window** around the
-    faulting operation, within which effects independent of it may or may not have
-    retired; that window MAY differ between build modes.
+7.1 **The invariant (P5).** For a given compilation target: fault-free executions
+    are **deterministic across build modes** (same source + target + inputs ⇒
+    identical observable behavior). A faulting execution is a **truncated**
+    execution: the fault is **imprecise but inescapable** — no value derived from
+    it becomes observable, delivery is guaranteed, and observable behavior is
+    identical across build modes **up to a fault window** around the faulting
+    operation, within which effects independent of it may or may not have retired;
+    that window MAY differ between build modes.
 
-7.2 **The window's bound (normative position).** A fault SHALL be delivered **no
-    later than the next synchronization operation or externally visible effect**
-    that follows the faulting operation in program order; nothing past that point
-    executes.
+7.2 **The window's bound.** A fault SHALL be delivered **no later than the next
+    synchronization operation or externally visible effect** (an **observable
+    effect**, §8) that follows the faulting operation in program order; nothing
+    past that point executes. This edition ships no synchronization operation
+    (chapter 09), so today the bound is the next **observable effect** (§8); the
+    synchronization delimiter is reserved for the atomics edition (§7.5).
 
-7.3 **Window collapse (normative position).** Where externally visible effects
-    are dense (MMIO, DMA, shared-memory writes), the window collapses tightly and
-    the model degenerates toward precise faulting (Bet 3); those paths are where
-    scoped regimes (§4) and proven contracts (chapter 07) carry the performance
-    load.
+7.3 **Window collapse.** Where externally visible effects are dense (MMIO, DMA,
+    shared-memory writes), the window collapses tightly and the model degenerates
+    toward precise faulting (Bet 3); those paths are where scoped regimes (§4) and
+    proven contracts (chapter 07) carry the performance load. At the dense limit
+    the window has zero width and the semantics coincides with the precise trap of
+    §3, of which precise trapping is the sound refinement (proof artifact §10).
 
-7.4 **The named-novel obligation (NN#20).** The composition of imprecise-fault
-    truncation with the adopted memory consistency model (chapter 09) under an
-    optimizing compiler is **novel semantics** (P5 says so; it is not sheltered
-    under P18's "adopt proven art"). Formalizing it is **mandatory pre-stability
-    work**, in the same validation tier as Bet 5's artifact.
+7.4 **The discharged single-threaded core (NORMATIVE).** For every legal
+    execution of a program on an input under this edition's single-threaded
+    semantics (no atomics, no synchronization operation; §7.5), the fault window
+    satisfies the following. Each is proved rigorous-informal in the proof
+    artifact and is normative here:
 
-7.5 **Acceptance criterion (NN#20).** The obligation is discharged when the fault
-    model is formalized as **mechanized** (strongly preferred) or **at minimum a
-    rigorous-informal** composition with the adopted consistency model of chapter
-    09 — precisely: a stated proof (mechanized or rigorous-informal) that the
-    window bound of §7.2 composes soundly with chapter 09's ordering, preserving
-    NN#1 and NN#5 (chapter 99, obligation OBL-WINDOW).
+    - **(a) Containment** (proof artifact Theorem 1). No observable effect (§8)
+      that data- or control-depends on the faulting operation appears in the
+      trace, and no observable effect at or after the window bound (§7.2) appears.
+      The observable trace of a faulting run is therefore a program-order prefix
+      of the fault-free observable sequence, truncated strictly before the bound,
+      then delivery of the fault report (§6.2) under the declared fault policy
+      (§6.1).
+    - **(b) Prefix-determinism** (proof artifact Theorem 2). A fault-free
+      execution produces the **identical complete** observable trace across all
+      build modes. A faulting execution produces the **identical** observable
+      trace across build modes: the deterministic observable prefix up to the last
+      observable effect before the fault, then delivery of the fault report under
+      the declared fault policy. The delivered fault is the
+      **program-order-earliest** enabled fault — the same fault the precise trap
+      (§3) delivers — so its **kind and source span are identical across build
+      modes**. The fault report's **value context** (§6.2) is **advisory** and MAY
+      vary with which window-interior, non-observable work retired.
+    - **(c) NN#1 / NN#5 preserved** (proof artifact §9). The window is a bounded,
+      **defined** nondeterminism, never undefined behavior (NN#1): no legal
+      window-interior reordering makes a value derived from the fault observable,
+      and none reaches an uninitialized read — initialization is the static
+      all-paths property of §5.1 (NN#5), which the window's reordering license
+      cannot perturb.
 
-**Gate:** blocks any optimizing implementation's soundness claim and any
-stability commitment (NN#20 is named a hard pre-stability gate).
+7.5 **Scope, the named-novel obligation, and the deferred concurrency composition
+    (NN#20).** §§7.1–§7.4 are normative for **single-threaded** executions. The
+    composition of imprecise-fault truncation with cross-thread ordering — the
+    **synchronization half** of the §7.2 bound — is the **named-novel** part of
+    NN#20 (novel semantics under an optimizing compiler; P5 says so, not sheltered
+    by P18's "adopt proven art"). This edition ships no atomics or synchronization
+    operation (chapter 09), so that half is **vacuous today**; its proof
+    obligations (O1–O5, proof artifact §12) are **CONJECTURE**, deferred as a
+    bundle with the atomics surface (chapter 09 §4). A concurrency feature SHALL
+    NOT land before that composition is discharged.
+
+    **Acceptance criterion (OBL-WINDOW, chapter 99).** The obligation is
+    discharged when the fault model is formalized — **mechanized** (strongly
+    preferred) or **at minimum rigorous-informal** — proving the §7.2 bound
+    composes soundly with the adopted consistency model of chapter 09, preserving
+    NN#1 and NN#5. Per ruling J1 the **single-threaded core is discharged**
+    (rigorous-informal; the proof artifact), with mechanization **preferred, not
+    required**; the concurrency composition above remains open.
+
+**Gate:** NN#20's single-threaded core is discharged (J1), so §§7.1–§7.4 no
+longer block an optimizing implementation of this concurrency-free edition on
+fault-window grounds. The **concurrency-composition** gate — blocking any atomics
+surface and the atomics edition's optimizing-implementation soundness claim —
+stays closed until §7.5's O1–O5 conjecture is discharged (NN#20 remains a hard
+pre-atomics gate).
+
+---
+
+## 8. Observable effects
+
+**Status: NORMATIVE-DRAFT.** This section defines the term **observable effect**
+for **any** execution — faulting or not — so the ordering guarantees the aliasing
+model (chapter 05 §6.2.5, §6.3.1(c)) and the fault window (§7.2) rest on have a
+single normative anchor rather than each restating it. Rationale: design 0001
+§11.3 (MMIO) and §7 (the fault window).
+
+8.1 **The observable effects of an execution are, and are only:**
+
+- **MMIO accesses.** A read or write through a `rawptr` formed from an integer
+  address (`addr_to_ptr[T]`, chapter 05 §2.4) that denotes memory outside the
+  abstract machine's own storage — a device window (design 0001 §11.3).
+- **Foreign / boundary calls.** A call across the foreign boundary (a boundary
+  module, chapter 08 §6) — its I/O and any effect on foreign state. No FFI surface
+  ships this edition (OBL-FFI), so this class is presently empty; it is enumerated
+  now so a future boundary module inherits the ordering rule rather than
+  discovering it.
+- **`trace`.** The program's explicit output channel: `trace(x)` appends to the
+  observable trace `θ`.
+- **Program completion.** The program's termination and its externally visible
+  result — the return value / exit status and, on a faulting execution, the
+  structured fault report (§6.2).
+
+8.2 **The ordering rule the optimizer owes.** Observable effects occur in
+    **program order relative to one another.** A conforming optimizing
+    implementation SHALL NOT **invent**, **duplicate**, **elide**, or **reorder**
+    an observable effect — neither across another observable effect nor across a
+    fault (§6.3, §7.2). This is the whole of the ordering the optimizer owes an
+    execution: non-observable computation MAY be reordered, coalesced, or elided
+    subject only to the fault window (§7) and the aliasing bound (chapter 05 §6.3).
+
+8.3 **Spec-level requirement vs. conservative implementation (non-normative
+    note).** Of the classes in §8.1, only *MMIO accesses* make a `rawptr` access
+    observable at the spec level: an ordinary (non-MMIO) `rawptr` access carries no
+    observable-ordering guarantee here, and the aliasing model permits optimizing
+    it (chapter 05 §6.2.3). Because an implementation generally cannot distinguish
+    an MMIO `rawptr` from an ordinary one, chapter 05 §6.2.5 **requires** it to
+    treat **every** `rawptr` access as observable — a sound over-approximation that
+    only adds ordering constraints. The shipping backends do exactly this: every
+    `ptr_read` / `ptr_write` is marked observable in MIR (`mir/build.rs`
+    `mark_last_observable`) and lowered as a barrier call, so `rawptr` is fully
+    **volatile** today — stronger than §8.1 alone requires (Appendix 05-A).

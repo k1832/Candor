@@ -12,7 +12,14 @@ chapter's stated obligations bind now.
 ## 1. Pre-stability hard gates (named in the philosophy)
 
 ### OBL-WINDOW — imprecise fault-window formalization
-- **Chapter:** 06 §7 (SKELETON).
+- **Chapter:** 06 §7 (NORMATIVE-DRAFT single-threaded window; §7.5 concurrency
+  composition SKELETON).
+- **Status:** **discharged** (single-threaded edition, 2026-07-21; ruling J1,
+  `docs/1.0-GATE-TRIAGE.md`). The rigorous-informal single-threaded core
+  (Containment, Prefix-determinism, NN#1/NN#5 preservation, collapse-to-precise)
+  is promoted into chapter 06 §7.4; mechanization is **preferred, not required**
+  (J1). Concurrency composition (O1–O5) deferred as a bundle with the atomics
+  surface (OBL-CONSIST). See the status update below.
 - **Hook:** P5 (the fault-window bound); **NN#20** (named-novel, mandatory
   pre-stability formalization); philosophy §8 critical path; NN#1/NN#5.
 - **Gate:** blocks any optimizing implementation's soundness claim and any
@@ -25,7 +32,9 @@ chapter's stated obligations bind now.
 
 ### OBL-ALIAS — unsafe-code aliasing model
 - **Chapter:** 05 §6 (NORMATIVE-DRAFT).
-- **Status:** **discharged-pending-review** (2026-07-21; see the status update below).
+- **Status:** **discharged** (single-threaded edition, 2026-07-21; atomics
+  composition deferred with OBL-CONSIST). The adversarial review's one repair
+  condition is met — see the status update below.
 - **Hook:** **P18** (named mandatory spec scope); NN#1 (which quietly rests on it).
 - **Gate:** blocks any optimizing implementation's soundness claim and any
   stability commitment.
@@ -178,9 +187,12 @@ skeleton-chapter gates (OBL-LEX, OBL-GRAM), one real-toolchain gate
 
 Of these, **OBL-WINDOW, OBL-ALIAS, and OBL-CONSIST are the philosophy-named
 pre-stability tier** (P18, NN#20): no "1.0" precedes their discharge (chapter 00
-§3.4). OBL-ALIAS is **discharged-pending-review** for the no-concurrency edition
-(2026-07-21; chapter 05 §6 NORMATIVE-DRAFT), its atomics composition deferred with
-OBL-CONSIST.
+§3.4). OBL-ALIAS is **discharged** for the no-concurrency edition (2026-07-21; chapter 05
+§6 NORMATIVE-DRAFT; the review's one repair condition is met, below), its atomics
+composition deferred with OBL-CONSIST. OBL-WINDOW is likewise **discharged** for
+the single-threaded edition (2026-07-21; chapter 06 §7 single-threaded window
+NORMATIVE-DRAFT; ruling J1), its concurrency composition (O1–O5) deferred with
+OBL-CONSIST; mechanization preferred-not-required (J1).
 
 ## OBL-SLICE-REGION (found by transcription, 2026-07-08)
 
@@ -219,6 +231,20 @@ observable and lowered as a barrier call (fully volatile). No backend emits an
 assumption a `rawptr` could falsify, so §6.4.1's obligation is un-exercised today;
 it is stated now so a future noalias-deriving backend inherits it, not discovers it.
 
+**Review + discharge (2026-07-21).** Adversarially reviewed
+(`docs/reviews/05-aliasing-model-review.md`): verdict SOUND-WITH-REPAIRS, one
+REPAIR required before dropping "discharged-pending-review" — "observable" was
+undefined for non-faulting executions. Repaired: chapter 06 §8 now defines
+**observable effect** normatively for **any** execution (MMIO accesses, foreign /
+boundary calls, `trace`, program completion) with the program-order-among-
+observables rule the optimizer owes (§8.2); chapter 05 §6.2.5 / §6.3.1(c) anchor to
+it instead of the fault-window clauses. The §6.5.3 future-`noalias` seam was
+tightened to state that a borrow-based `noalias` tightening **withdraws** §6.4.1's
+`rawptr`-read carve-out (foreign reads through an aliasing `rawptr` become UB, as
+LLVM `noalias` requires) — a restatement of §6.4 by amendment with a migrator, not
+merely a narrowing of sound programs. OBL-ALIAS is thus **discharged** for the
+single-threaded edition.
+
 Open (deferred with the concurrency edition): the composition with atomics and the
 full chapter-09 consistency model (OBL-CONSIST); mechanization (preferred, not
 required). The single-threaded, no-atomics edition is discharged.
@@ -232,6 +258,27 @@ Prefix-determinism, NN#1/NN#5 preservation, and the collapse-to-precise limit un
 effect-order-total reordering license. Open: concurrency composition (stated as conjecture with
 obligations O1-O5), mechanization, compiler correctness, and the fault-torn multi-store
 transaction residual (deferred to the volatile-access design).
+
+## OBL-WINDOW status update (2026-07-21)
+
+Chapter 06 §7's single-threaded fault window is promoted from SKELETON to
+NORMATIVE-DRAFT, discharging OBL-WINDOW for the concurrency-free edition (ruling
+J1, `docs/1.0-GATE-TRIAGE.md`). The draft's discharged core — Containment
+(Theorem 1), Prefix-determinism (Theorem 2, program-order-first fault identity),
+NN#1/NN#5 preservation, and collapse-to-precise — is stated normatively in
+chapter 06 §7.4; `docs/spec/drafts/fault-window-formalization.md` is retained as
+the **proof artifact** the chapter cites. Per J1, **mechanization is preferred,
+not required** for this edition. The §7.2 window bound is now a normative
+property, not a draft claim.
+
+Open (deferred as a bundle with the atomics edition): the **concurrency
+composition** — the synchronization half of the §7.2 bound — and its obligations
+O1–O5 (draft §12), all CONJECTURE and blocked on the atomics surface (chapter 09
+§4, OBL-CONSIST); mechanization (preferred); compiler-correctness (out of scope
+by construction, draft §13.2); and the fault-torn multi-store transaction
+residual (deferred to the volatile-access design). Chapter 06 §7.5 records the
+scope; chapter 09 §4.3 gates any concurrency feature on the composition's
+discharge.
 
 ## OBL-MINMAX-INTRINSICS (found by editor-support work, 2026-07-08)
 
@@ -5222,3 +5269,54 @@ Ratified fork (deciding authority, 2026-07-16). `AllocVtable` grew a third slot
   their golden item-counts and `.cn`/migrator pairing are unchanged). Full
   `cargo nextest run` green (929 tests) incl. self-host interp+lower corpus, AOT,
   LLVM fifth-engine, wasm; clippy `--all-targets` clean.
+
+## OBL-EDITION-REHEARSAL — P15 edition/migrator machinery exercised end-to-end (1.0-gate item 1) (2026-07-21)
+
+1.0-gate item 1 (`docs/1.0-GATE-TRIAGE.md` row 1): P15's promise that "the
+evolution mechanism works before it is relied on." Before this slice the manifest
+had a required, validated `edition` field with **only `"2026"` legal**, and the
+edition never reached the front-end — no second edition, no retained old
+front-end, no breaking-change migrator had ever run. This slice proves the
+machinery with a **REHEARSAL** edition (`"2027-rehearsal"`, `manifest::REHEARSAL_EDITION`),
+deliberately synthetic and clearly marked so nobody mistakes it for a shipped
+language change; it can be retired once a real edition relies on the machinery.
+
+- **The plumbing the design assumed but did not have.** The `edition` field
+  validated but was **never threaded to the parser** (`resolve_dir_root`,
+  `resolve_pkg`, and `build_dir` all loaded the manifest yet parsed with a fixed
+  front-end). This slice adds that plumbing: `manifest::Edition` flows from each
+  package's manifest through the module builders (`modules.rs`, `build/mod.rs`),
+  the resolver (`resolve_pkg.rs`), and the audit walk (`audit.rs`) into the real
+  lexer (`real::lexer::lex_in` / `real::token::real_keyword_from_str`). The
+  **parser is edition-agnostic** — both keyword spellings lex to the same token —
+  so the fork lives in exactly one place (the lexer keyword table).
+- **The breaking change (surface-only, byte-identical semantics, 0017 F4).** In
+  `2027-rehearsal` the mutability keyword `mut` is respelled `mutable`; `mut` is
+  demoted to an ordinary identifier. (a) The 2026 front-end still accepts `mut`
+  (old editions keep compiling), (b) the 2027-rehearsal front-end accepts ONLY
+  `mutable` (it IS a breaking change), (c) both spellings map to `RKw::Mut` — the
+  same AST — so the program means the same thing across the boundary.
+- **The automatic migrator.** `candor migrate-edition <pkg-dir>` (and
+  `candor::migrate_edition_dir`): a token-driven, formatting-preserving rewrite of
+  every `.cnr` under `src/` (`mut` keyword tokens -> `mutable`, leaving `mut` in
+  comments/strings/identifiers untouched) plus a line-oriented manifest edition
+  bump. Fully automatic and **idempotent** (an already-migrated package is a
+  reported no-op). Honest scope note: a shipped keyword rename would also need to
+  alpha-rename any existing identifier equal to the new keyword; the rehearsal
+  fixtures use none, so the migrator does not.
+- **Verified byte-identical across engines.** The migrated (2027) package checks
+  clean and returns identically to the original (2026) on the tree-walker, the MIR
+  interpreter, the Cranelift native engine, and the AOT executable
+  (`tests/editions.rs`).
+- **Cross-edition linking, both directions (0017 F4).** A 2026 app depending on a
+  2027-rehearsal library (using `mutable`) and a 2027-rehearsal app (using
+  `mutable`) depending on a 2026 library (using `mut`) both link, check clean, and
+  run across every engine — each package parsed under its own manifest edition, the
+  merged interface artifact edition-agnostic.
+- **Gate.** `tests/editions.rs` (9 tests, CI-gated with the suite): old edition
+  compiles+runs; new edition rejects the old spelling and accepts only the new;
+  old edition rejects the new spelling; unknown edition still errors (M0102);
+  migrator is automatic + idempotent + byte-identical across engines; migrate
+  source is idempotent; cross-edition deps link both directions. Full
+  `cargo nextest run` green; clippy `--all-targets` clean. ROADMAP left to the
+  deciding authority.
